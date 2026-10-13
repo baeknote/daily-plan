@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, ArrowDownToLine, BatteryCharging, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, GripVertical, Moon, MoreHorizontal, Plus, Sparkles, Sun, Trash2, X, Pencil } from "lucide-react";
+import { Activity, ArrowDownToLine, BatteryCharging, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, Download, GripVertical, Moon, MoreHorizontal, Plus, Sparkles, Sun, Trash2, Upload, X, Pencil } from "lucide-react";
 import { APP_META } from "../app.meta.ts";
 import { HashRouter } from "react-router-dom";
 import "./style.css";
@@ -22,6 +22,35 @@ async function readStore(store, key) { const db = await dbPromise; if (!db) retu
 async function putStore(store, value) { const db = await dbPromise; if (!db) return; return new Promise((resolve, reject) => { const tx = db.transaction(store, "readwrite"); tx.objectStore(store).put(value); tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); }); }
 async function allStore(store) { const db = await dbPromise; if (!db) return []; return new Promise((resolve, reject) => { const q = db.transaction(store).objectStore(store).getAll(); q.onsuccess = () => resolve(q.result); q.onerror = () => reject(q.error); }); }
 async function deleteStore(store, key) { const db = await dbPromise; if (!db) return; return new Promise((resolve, reject) => { const tx = db.transaction(store, "readwrite"); tx.objectStore(store).delete(key); tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); }); }
+const BACKUP_FORMAT = "daybattery-backup";
+function validateBackup(value) {
+  if (!value || value.format !== BACKUP_FORMAT || value.version !== 1 || !Array.isArray(value.days) || !Array.isArray(value.templates) || !Array.isArray(value.categories)) throw new Error("하루 배터리 백업 파일이 아니거나 지원하지 않는 버전이에요");
+  if (value.days.length > 10000 || value.templates.length > 10000 || value.categories.length > 1000) throw new Error("백업 파일에 항목이 너무 많아요");
+  const validText = (text) => typeof text === "string" && text.length > 0 && text.length <= 200;
+  const validMinute = (minute) => Number.isInteger(minute) && minute >= 0 && minute <= 2880;
+  const validDate = (date) => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date) && !Number.isNaN(Date.parse(`${date}T00:00:00Z`));
+  const validEvents = (events) => Array.isArray(events) && events.length <= 1000 && events.every((event) => event && validText(event.id) && validText(event.name) && validText(event.category) && validMinute(event.start) && validMinute(event.end) && event.start < event.end && event.end <= 1440);
+  const validSleep = (sleep) => sleep === null || (sleep && validMinute(sleep.start) && validMinute(sleep.end) && sleep.start < sleep.end && sleep.start < 1440 && (!sleep.date || validDate(sleep.date)));
+  if (!value.days.every((record) => record && validDate(record.date) && validEvents(record.events) && validSleep(record.sleep)) || !value.templates.every((item) => item && validText(item.id) && validText(item.name) && validEvents(item.events) && validSleep(item.sleep)) || !value.categories.every((item) => item && validText(item.name) && /^#[0-9a-fA-F]{6}$/.test(item.color) && validText(item.icon) && Number.isInteger(item.defaultMinutes) && item.defaultMinutes > 0 && item.defaultMinutes <= 1440)) throw new Error("백업 파일의 일정 데이터가 올바르지 않아요");
+  return value;
+}
+async function replaceBackup(backup) {
+  const db = await dbPromise;
+  if (!db) throw new Error("이 브라우저에서는 기기 저장소를 사용할 수 없어요");
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(["days", "templates", "categories"], "readwrite");
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("백업을 복원하지 못했어요"));
+    try {
+      for (const store of ["days", "templates", "categories"]) {
+        const target = tx.objectStore(store);
+        target.clear();
+        for (const item of backup[store]) target.put(item);
+      }
+    } catch (error) { tx.abort(); reject(error); }
+  });
+}
 const mins = (time) => { const [h, m] = time.split(":").map(Number); return h * 60 + m; };
 const timeLabel = (m) => m === 1440 ? "24:00" : `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 function sleepOverlaps(sleep, start, end, offset = 0) {
@@ -166,6 +195,30 @@ function App() {
     setData((current) => ({ ...current, events: current.events.map((event) => event.category === original.name ? { ...event, category: name, ...(event.name === original.name ? { name } : {}) } : event) }));
     setModal(null); flash("일정 종류를 수정했어요");
   }
+  async function exportBackup() {
+    try {
+      if (!await dbPromise) throw new Error("기기 저장소를 사용할 수 없어요");
+      if (hydrated && data.date === day) await putStore("days", data);
+      const [days, savedTemplates, categories] = await Promise.all([allStore("days"), allStore("templates"), allStore("categories")]);
+      const backup = { format: BACKUP_FORMAT, version: 1, exportedAt: new Date().toISOString(), days, templates: savedTemplates, categories };
+      const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url; link.download = `haru-battery-backup-${dateInSeoul()}.json`;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      flash("백업 파일을 내려받았어요");
+    } catch { flash("백업 파일을 만들지 못했어요"); }
+  }
+  async function importBackup(file) {
+    if (!file) return;
+    try {
+      if (file.size > 5 * 1024 * 1024) throw new Error("5MB 이하의 백업 파일을 선택해 주세요");
+      const backup = validateBackup(JSON.parse(await file.text()));
+      if (!window.confirm(`백업의 일정 ${backup.days.length}일, 템플릿 ${backup.templates.length}개, 사용자 종류 ${backup.categories.length}개로 이 기기의 저장 내용을 교체할까요?`)) return;
+      await replaceBackup(backup);
+      location.reload();
+    } catch (error) { flash(error instanceof SyntaxError ? "JSON 파일을 읽을 수 없어요" : error.message || "백업을 복원하지 못했어요"); }
+  }
   const displayEvents = activeEvents.map((ev) => drag?.id === ev.id ? { ...ev, displayStart: drag.previewStart, displayEnd: drag.previewEnd } : ev);
   return <div className="app-shell">
     <header className="topbar"><a className="brand" href="#/"><span className="brand-mark"><BatteryCharging size={19}/></span><span>하루 배터리</span></a><div className="top-actions"><button className="icon-button help-button" onClick={() => setModal({ type:"help" })} aria-label="도움말"><CircleHelp size={18}/><span>사용법</span></button><span className="local-badge"><span/> 내 기기에 저장</span></div></header>
@@ -185,17 +238,17 @@ function App() {
         <div className="section-divider"/><div className="category-heading"><div><h2>무엇을 할까요?</h2><p>종류를 골라 하루에 담아보세요</p></div><button className="custom-add" onClick={() => setModal({type:"custom"})}><Plus size={16}/> 직접 추가</button></div>
         <div className="category-grid">{types.map((cat) => <button className={`category-chip ${cat.name==="잠"?"sleep-chip":""} ${selectedCategory?.name===cat.name?"selected-chip":""}`} key={cat.name} onClick={() => cat.name==="잠" ? setModal({type:"sleep",sleep:data.sleep}) : (setSelectedCategory(cat),flash(`${cat.name}을(를) 넣을 시간 눈금을 선택해 주세요`))} style={{"--chip-color":cat.color}}><span className="chip-icon">{cat.icon}</span><span>{cat.name}</span><Plus className="chip-plus" size={13}/>{!CATEGORIES.includes(cat)&&<span className="edit-category" role="button" tabIndex={0} onPointerDown={(e)=>e.stopPropagation()} onClick={(e)=>{e.stopPropagation();setModal({type:"edit-custom",category:cat})}} aria-label={`${cat.name} 수정`}><Pencil size={11}/></span>}</button>)}</div>
         {data.sleep && <div className="sleep-note"><span className="sleep-moon">☾</span><div><b>수면 시간</b><span>{timeLabel(data.sleep.start)} – {timeLabel(data.sleep.end % 1440)}{data.sleep.end > 1440 && <em> 다음 날</em>}</span></div><button onClick={() => deleteItem({isSleep:true})} aria-label="수면 삭제"><Trash2 size={15}/></button></div>}
-        <div className="planner-bottom"><span><span className="saved-check"><Check size={12}/></span> 변경 사항은 이 기기에 자동 저장돼요</span><button onClick={() => setModal({type:"sleep"})}><Moon size={15}/> 수면 시간 설정</button></div>
+        <div className="planner-bottom"><span><span className="saved-check"><Check size={12}/></span> 변경 사항은 이 기기에 자동 저장돼요</span><div className="planner-bottom-actions"><button onClick={() => setModal({type:"backup"})}><Download size={15}/> JSON 백업</button><button onClick={() => setModal({type:"sleep"})}><Moon size={15}/> 수면 시간 설정</button></div></div>
       </section>
       <section className="encouragement"><span className="encouragement-icon"><Activity size={16}/></span><p><b>완벽한 하루보다, 나다운 하루.</b> 빈 시간도 계획의 일부예요.</p><span className="encouragement-spark">✳</span></section>
       <footer>하루를 채우는 방식은 모두 다르니까 <span>·</span> 당신의 페이스를 응원해요<br/><small>일정은 이 브라우저에만 저장돼요. 브라우저 데이터를 지우면 함께 삭제돼요.</small></footer>
     </main>
     {toast && <div className="toast"><Check size={15}/>{toast}</div>}
-    {modal && <Modal modal={{...modal, onSave:saveSleep}} setModal={setModal} day={day} data={data} templates={templates} addCustom={addCustom} editCustom={editCustom} saveTemplate={saveTemplate} copyDay={copyDay} flash={flash}/>}
+    {modal && <Modal modal={{...modal, onSave:saveSleep}} setModal={setModal} day={day} data={data} templates={templates} addCustom={addCustom} editCustom={editCustom} saveTemplate={saveTemplate} copyDay={copyDay} exportBackup={exportBackup} importBackup={importBackup} flash={flash}/>}
   </div>;
 }
 
-function Modal({ modal, setModal, day, data, templates, addCustom, editCustom, saveTemplate, copyDay, flash }) {
+function Modal({ modal, setModal, day, data, templates, addCustom, editCustom, saveTemplate, copyDay, exportBackup, importBackup, flash }) {
   const [name,setName]=useState(modal.category?.name || ""); const [color,setColor]=useState(modal.category?.color || "#e995a3"); const [start,setStart]=useState(modal.sleep?timeLabel(modal.sleep.start):"23:00"); const [end,setEnd]=useState(modal.sleep?timeLabel(modal.sleep.end%1440):"07:00");
   const close=()=>setModal(null);
   const wrapper=(title,desc,content)=> <div className="modal-backdrop" onMouseDown={(e)=>e.target===e.currentTarget&&close()}><section className="modal-card"><button className="modal-close" onClick={close} aria-label="닫기"><X size={18}/></button><div className="modal-kicker">하루 배터리</div><h2>{title}</h2>{desc&&<p className="modal-description">{desc}</p>}{content}</section></div>;
@@ -204,6 +257,7 @@ function Modal({ modal, setModal, day, data, templates, addCustom, editCustom, s
   if (modal.type==="templates") return wrapper("저장한 하루 템플릿","자주 반복하는 하루를 불러와요.",<div className="modal-list">{templates.length ? templates.map((item)=><button className="list-row" key={item.id} onClick={()=>copyDay(item)}><span className="list-row-icon"><Copy size={16}/></span><span><b>{item.name}</b><small>일정 {item.events?.length || 0}개</small></span><ChevronRight size={17}/></button>) : <div className="empty-state">아직 저장한 템플릿이 없어요.</div>}<button className="secondary-button" onClick={()=>setModal({type:"template-name"})}><Plus size={15}/> 지금 하루를 템플릿으로 저장</button></div>);
   if (modal.type==="template-name") return wrapper("이 하루를 저장할까요?","다음에 다른 날짜로 그대로 복사할 수 있어요.",<form onSubmit={(e)=>{e.preventDefault();if(name.trim())saveTemplate(name.trim())}}><label className="field-label">템플릿 이름<input className="text-field" placeholder="예: 평일 루틴" value={name} onChange={(e)=>setName(e.target.value)} autoFocus/></label><button className="primary-button" type="submit"><Check size={16}/> 템플릿 저장</button></form>);
   if (modal.type==="copy") return wrapper("어디서 가져올까요?","저장된 다른 날짜 또는 템플릿을 현재 날짜에 복사해요.",<div className="modal-list"><label className="field-label">날짜 선택<input className="text-field" type="date" onChange={(e)=>e.target.value&&readStore("days",e.target.value).then((source)=>source?copyDay(source):flash("해당 날짜에 저장된 일정이 없어요"))}/></label>{templates.map((item)=><button className="list-row" key={item.id} onClick={()=>copyDay(item)}><span className="list-row-icon"><Copy size={16}/></span><span><b>{item.name}</b><small>템플릿</small></span><ChevronRight size={17}/></button>)}</div>);
+  if (modal.type==="backup") return wrapper("JSON 백업","날짜별 일정, 템플릿, 직접 만든 종류를 파일로 보관하거나 복원해요.",<div className="modal-list"><button className="primary-button" onClick={exportBackup}><Download size={16}/> JSON 파일 내보내기</button><label className="secondary-button backup-import"><Upload size={16}/> 백업 파일로 복원<input type="file" accept=".json,application/json" onChange={(e)=>{const file=e.target.files?.[0];e.target.value="";importBackup(file)}}/></label><p className="backup-warning">복원하면 이 기기에 저장된 기존 일정, 템플릿, 종류가 백업 내용으로 교체돼요.</p></div>);
   if (modal.type==="more") return wrapper("하루 설정",null,<div className="modal-list"><button className="list-row" onClick={()=>setModal({type:"template-name"})}><span className="list-row-icon"><Copy size={16}/></span><span><b>하루를 템플릿으로 저장</b><small>다음에 다시 사용할 수 있어요</small></span><ChevronRight size={17}/></button><button className="list-row" onClick={()=>{if(window.confirm("이 날짜의 모든 일정을 지울까요?")){putStore("days",{date:day,events:[],sleep:null});location.reload()}}}><span className="list-row-icon"><Trash2 size={16}/></span><span><b>오늘 일정 비우기</b><small>저장된 일정과 수면을 삭제해요</small></span><ChevronRight size={17}/></button></div>);
   if (modal.type==="help") return wrapper("하루 배터리 사용법","내 시간의 빈칸까지 그대로 보여주는 하루 계획표예요.",<div className="help-list"><p><span>01</span><b>종류를 눌러 일정을 추가해요</b><small>일정은 원하는 시간으로 옮길 수 있어요.</small></p><p><span>02</span><b>박스 양 끝을 당겨 길이를 바꿔요</b><small>빈 시간은 그대로 남고, 일정은 겹치지 않아요.</small></p><p><span>03</span><b>수면은 별도 시간으로 기록해요</b><small>자정을 넘겨도 한 번에 이어서 저장돼요.</small></p><p><span>04</span><b>날짜별로 자동 저장돼요</b><small>템플릿으로 저장하거나 다른 날짜에 복사할 수 있어요.</small></p></div>);
   return null;
