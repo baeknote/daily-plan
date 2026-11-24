@@ -1,0 +1,9 @@
+@import "tailwindcss";
+@source "../components";
+@source "../app";
+:focus-visible { outline: 3px solid #35835a; outline-offset: 4px; }
+.app-tabs { display: flex; gap: 5px; padding: 4px; background: #eef2ed; border-radius: 12px; }
+.app-tabs a { padding: 8px 14px; color: #66746b; border-radius: 8px; font-size: 14px; text-decoration: none; white-space: nowrap; }
+.app-tabs a[aria-current="page"] { background: white; color: #28583c; box-shadow: 0 1px 4px #203e3010; font-weight: 700; }
+.planner-loading { padding: 90px 20px; text-align: center; color: #526c5b; }
+@media(max-width:700px) { .app-tabs a { padding: 8px 10px; } .top-actions .local-badge { display: none; } .topbar { gap: 10px; flex-wrap: wrap; height: auto; min-height: 72px; padding-top: 12px; padding-bottom: 12px; } }

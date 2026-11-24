@@ -1,3 +1,10 @@
 node_modules/
 dist/
 .vercel/
+
+.next/
+.env*
+!.env.example
+*.tsbuildinfo
+coverage/
+*.log
