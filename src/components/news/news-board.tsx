@@ -27,14 +27,16 @@ function NewsCard({ post, featured = false }: { post: NewsPost; featured?: boole
 export default function NewsBoard() {
   const [data, setData] = useState<NewsResponse | null>(null);
   const [loading, setLoading] = useState(true), [error, setError] = useState('');
+  const [errorCode, setErrorCode] = useState('');
+  const connectionError = ['CONFIG', 'TOKEN_FORMAT', 'AUTH_INVALID', 'ACCESS_DENIED'].includes(errorCode);
   const [retryAt, setRetryAt] = useState(0), [clock, setClock] = useState(Date.now());
   const [lane, setLane] = useState<'all' | Lane>('all'), [query, setQuery] = useState(''), [tag, setTag] = useState('');
   async function load(signal?: AbortSignal) {
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setErrorCode('');
     try {
       const response = await fetch('/api/news', { signal, credentials: 'omit' });
       const body = await response.json();
-      if (!response.ok) { setRetryAt(Date.now() + (body.error?.retryAfter ?? 60) * 1000); throw new Error(body.error?.message ?? '뉴스를 불러오지 못했어요.'); }
+      if (!response.ok) { setErrorCode(['CONFIG', 'TOKEN_FORMAT', 'AUTH_INVALID', 'ACCESS_DENIED', 'RATE_LIMIT', 'INVALID_DATA', 'UNAVAILABLE'].includes(body.error?.code) ? body.error.code : 'UNAVAILABLE'); setRetryAt(Date.now() + (body.error?.retryAfter ?? 60) * 1000); throw new Error(body.error?.message ?? '뉴스를 불러오지 못했어요.'); }
       setData(body); setRetryAt(0);
     } catch (e) { if (!(e instanceof DOMException && e.name === 'AbortError')) setError(e instanceof Error ? e.message : '연결 상태를 확인해 주세요.'); }
     finally { if (!signal?.aborted) setLoading(false); }
@@ -56,7 +58,7 @@ export default function NewsBoard() {
       {!!tags.length && <div className="news-tag-filter" role="group" aria-label="태그 필터"><button aria-pressed={!tag} onClick={() => setTag('')}>모든 태그</button>{tags.map(t => <button key={t} aria-pressed={tag === t} onClick={() => setTag(tag === t ? '' : t)}>#{t}</button>)}</div>}
     </section>
     <div className="news-result-heading"><div><h2>{lane === 'all' ? '오늘 살펴볼 이야기' : lanes.find(l => l.id === lane)!.hint}</h2><span>{data ? posts.length + '개의 발견' : '개인화 피드'}</span></div>{data && <p>최근 확인 {dateLabel(data.fetchedAt)} · 서울</p>}</div>
-    {error && <div className="news-state news-error" role="alert"><h3>잠깐, 연결을 확인하고 있어요</h3><p>{error}</p>{data && <p>아래는 이전에 받은 뉴스예요. 최신 정보는 원문에서 확인해 주세요.</p>}</div>}
+    {error && <div className="news-state news-error" role="alert"><h3>{connectionError ? '뉴스 연결 설정을 확인해야 해요' : '잠깐, 연결을 확인하고 있어요'}</h3><p>{error}</p>{errorCode && <p>오류 코드: <code>{errorCode}</code></p>}{data && <p>아래는 이전에 받은 뉴스예요. 최신 정보는 원문에서 확인해 주세요.</p>}</div>}
     {data?.notice && <p className={'news-notice ' + (data.stale ? 'is-stale' : '')} role="status">{data.notice}</p>}
     {loading && !data ? <div className="news-grid" role="status" aria-label="뉴스를 불러오는 중">{[1,2,3].map(n => <div className="news-skeleton" key={n}><div/><span/><span/><span/></div>)}</div> : featured ? <><div className="news-pick-label"><FlaskConical size={16}/> 먼저 살펴볼 이야기 <span>실험 가능성·관련성·신선도를 함께 봤어요</span></div><NewsCard post={featured} featured/><div className="news-grid">{posts.slice(1).map(post => <NewsCard key={post.id} post={post}/>)}</div></> : !error && <div className="news-state"><Search size={28}/><h3>{data?.posts.length ? '조건에 맞는 글이 없어요' : '아직 담긴 AI 소식이 없어요'}</h3><p>{data?.posts.length ? '검색어나 태그를 바꿔 다른 발견을 찾아보세요.' : '개인화 피드에 AI 관련 글이 들어오면 여기에 표시돼요.'}</p>{(query || tag || lane !== 'all') && <button onClick={() => { setQuery(''); setTag(''); setLane('all'); }}>필터 초기화</button>}</div>}
     <details className="news-method"><summary>어떻게 고르고 분류하나요?</summary><p>개인화 피드 최근 50개 글의 제목·태그·제공된 요약으로 AI 관련 글을 선별해요. 최근 48시간 이내 발행되고 출시 신호가 있으면 Breaking, 구현할 도구·기법과 사용 단서가 있으면 Worth Building, 나머지는 Deep Read에 담아요. 각 글은 한 분류에만 들어가요.</p><p>원문 전문은 수집하지 않아요. 요약은 daily.dev 제공 내용이며, 분류는 자동 규칙이므로 원문 확인이 필요해요. 확인할 때 캐시가 만료됐다면 새 데이터를 요청하며, 화면을 닫아 두면 수집하지 않아요.</p>{data?.hasMore && <p>개인화 피드의 첫 50개 글만 확인했어요. 전체 AI 뉴스를 빠짐없이 제공하는 서비스는 아니에요.</p>}</details>

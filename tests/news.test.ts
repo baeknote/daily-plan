@@ -62,7 +62,7 @@ test('missing token never makes an upstream request', async () => {
 test('authentication failures are sanitized and back off', async () => {
   for(const status of [401,403]){
     let calls=0;const get=createNewsService({token:()=>credential,now:()=>now,fetcher:async()=>{calls++;return new Response('private upstream '+credential,{status});}});
-    for(let i=0;i<2;i++)await assert.rejects(get(),{code:'AUTH',status:503});assert.equal(calls,1);
+    for(let i=0;i<2;i++)await assert.rejects(get(),{code:status === 401 ? 'AUTH_INVALID' : 'ACCESS_DENIED',status:503});assert.equal(calls,1);
   }
 });
 test('rate limiting uses documented retryAfter without exposing raw errors', async () => {
@@ -88,4 +88,22 @@ test('an upstream credential echo is rejected even outside credential-shaped str
 test('Korean publication signals and publisher text stay intact', () => {
   const p = post({title:'새 AI 모델 API 출시',summary:'에이전트를 구현할 수 있는 SDK입니다.',source:{name:'기술 소식'}});
   assert.equal(p.title,'새 AI 모델 API 출시');assert.equal(p.sourceName,'기술 소식');assert.equal(classifyPost(p,now)?.lane,'breaking');
+});
+
+test('malformed environment values are rejected before any network request', async () => {
+  const values = ['Bearer test-only-credential', '"test-only-credential"', "'test-only-credential'", 'test-only-credential'+String.fromCharCode(92), 'test-only'+String.fromCharCode(10)+'credential', 'DAILY_DEV_TOKEN=test-only-credential'];
+  for (const value of values) {
+    let calls=0;const get=createNewsService({token:()=>value,fetcher:async()=>{calls++;return feed();}});
+    await assert.rejects(get(),{code:'TOKEN_FORMAT',status:503});assert.equal(calls,0);
+  }
+});
+test('outer whitespace is trimmed while a token-only value is sent exactly once', async () => {
+  let received='';const get=createNewsService({token:()=> '  '+credential+'  ',fetcher:async(_url,options)=>{received=(options?.headers as Record<string,string>).Authorization;return feed();}});
+  await get();assert.equal(received,'Bearer '+credential);
+});
+test('authorization failure never falls back to an old successful feed', async () => {
+  for(const status of [401,403]){
+    let time=now,calls=0;const get=createNewsService({token:()=>credential,now:()=>time,fetcher:async()=>++calls===1?feed():new Response('private detail',{status})});
+    await get();time+=300001;await assert.rejects(get(),{code:status===401?'AUTH_INVALID':'ACCESS_DENIED'});
+  }
 });

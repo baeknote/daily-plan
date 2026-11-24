@@ -63,3 +63,17 @@ Keep the current origin to preserve IndexedDB daybattery-v1, version 2, stores d
 5. Inspect browser network/static chunks for credential leaks and verify CDN hits at the deployed canonical URL.
 
 Out of scope: newsletter, RSS, Netlify Blobs, scheduled ingestion, CLI, second AI-summary API and bookmark writes.
+
+## Connection troubleshooting
+
+The value of DAILY_DEV_TOKEN must contain only the token, without Bearer, quotes, a shell assignment, embedded whitespace or a trailing backslash. The server adds the Bearer header. Keep the value out of chats and logs.
+
+The news API exposes only safe diagnostic codes:
+- CONFIG: the runtime variable is empty.
+- TOKEN_FORMAT: the variable contains obvious copy/paste formatting. No request is sent.
+- AUTH_INVALID: daily.dev returned 401; check expiration, revocation or an incorrectly copied token.
+- ACCESS_DENIED: daily.dev returned 403; check account/endpoint access and plan limits. Do not assume buying Plus is required without verifying the account.
+
+Set the token for the correct Vercel project/environment, redeploy, and open the newest production deployment. Environment changes do not alter older deployment URLs. After a failed upstream request a warm instance backs off for up to five minutes; a new deployment resets that memory.
+
+Reference: https://docs.daily.dev/public-api/#authentication

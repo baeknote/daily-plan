@@ -7,6 +7,7 @@ export class NewsError extends Error {
   constructor(public code: string, public status: number, public retryAfter = 60) { super(code); }
 }
 const TTL = 300_000, MAX_STALE = 900_000;
+const CONNECTION_ERRORS = new Set(['AUTH_INVALID', 'ACCESS_DENIED', 'TOKEN_FORMAT', 'CONFIG']);
 const ENDPOINT = 'https://api.daily.dev/public/v1/feeds/foryou?limit=50';
 
 // One fixed feed, no arbitrary proxy, pagination or cache-busting query inputs.
@@ -19,14 +20,21 @@ export function createNewsService({ fetcher = fetch, now = Date.now, token }: {
   let blockedUntil = 0;
   let lastError: NewsError | undefined;
   const stale = (error: NewsError) => {
-    if (saved && now() - saved.time <= MAX_STALE && !['AUTH', 'CONFIG'].includes(error.code)) {
+    if (saved && now() - saved.time <= MAX_STALE && !CONNECTION_ERRORS.has(error.code)) {
       return { ...saved.value, stale: true, notice: '연결이 원활하지 않아 마지막으로 받은 뉴스를 보여드려요. 갱신 시각을 확인해 주세요.' };
     }
     throw error;
   };
-  async function load(): Promise<NewsResponse> {
+  function readCredential(): string {
     const secret = token()?.trim();
     if (!secret) throw new NewsError('CONFIG', 503);
+    // Only the credential belongs in this variable, never a shell assignment or
+    // a complete Authorization header. Do not echo the rejected value.
+    if (/^Bearer\b|^DAILY_DEV_TOKEN\s*=|[\s"'\\]/i.test(secret)) throw new NewsError('TOKEN_FORMAT', 503, 300);
+    return secret;
+  }
+  async function load(): Promise<NewsResponse> {
+    const secret = readCredential();
     let response: Response;
     try {
       response = await fetcher(ENDPOINT, {
@@ -34,7 +42,8 @@ export function createNewsService({ fetcher = fetch, now = Date.now, token }: {
         redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(8000),
       });
     } catch { throw new NewsError('UNAVAILABLE', 503); }
-    if (response.status === 401 || response.status === 403) throw new NewsError('AUTH', 503, 300);
+    if (response.status === 401) throw new NewsError('AUTH_INVALID', 503, 300);
+    if (response.status === 403) throw new NewsError('ACCESS_DENIED', 503, 300);
     if (response.status === 429) {
       // RateLimitError.retryAfter is documented in the OpenAPI response body.
       let seconds = Number(response.headers.get('retry-after'));
@@ -75,13 +84,13 @@ export function createNewsService({ fetcher = fetch, now = Date.now, token }: {
     return value;
   }
   return async function getNews(): Promise<NewsResponse> {
-    if (!token()?.trim()) { saved = undefined; throw new NewsError('CONFIG', 503); }
+    try { readCredential(); } catch (error) { saved = undefined; throw error; }
     if (blockedUntil > now() && lastError) return stale(lastError);
     if (saved && now() - saved.time < TTL) return saved.value;
     if (!pending) {
       pending = load().catch(error => {
         const safe = error instanceof NewsError ? error : new NewsError('UNAVAILABLE', 503);
-        if (safe.code === 'AUTH') saved = undefined;
+        if (CONNECTION_ERRORS.has(safe.code)) saved = undefined;
         lastError = safe; blockedUntil = now() + safe.retryAfter * 1000;
         return stale(safe);
       }).finally(() => { pending = undefined; });
