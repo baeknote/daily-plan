@@ -1,10 +1,7 @@
 "use client";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
 import { Activity, ArrowDownToLine, BatteryCharging, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, Download, GripVertical, Moon, MoreHorizontal, Plus, Sparkles, Sun, Trash2, Upload, X, Pencil } from "lucide-react";
 import AppNavigation from "./components/app-navigation";
-import { HashRouter } from "react-router-dom";
-import "./style.css";
 
 const CATEGORIES = [
   { name: "잠", color: "#9b9be7", icon: "☾", defaultMinutes: 480 }, { name: "밥", color: "#f2ad73", icon: "◒", defaultMinutes: 60 },
